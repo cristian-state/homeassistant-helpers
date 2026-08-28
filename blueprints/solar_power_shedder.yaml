@@ -1,0 +1,618 @@
+blueprint:
+  name: Solar Power Shedder
+  description: >
+    Generic solar-surplus load shedder with an arbitrary number of prioritized
+    loads. Loads are configured as an ordered list; the order determines
+    priority. Loads are started in priority order and stopped in reverse
+    priority order.
+
+    Each load has its own power consumption, SOC thresholds and deficit
+    threshold.
+
+    Startup uses the configured load wattage. Before starting a load, the
+    controller calculates the total nominal consumption of all currently
+    running dump loads plus the new load and requires sufficient solar
+    surplus to cover that load plus the configured safety margin.
+
+    Includes sequential startup, normal shutdown and emergency load shedding.
+
+  domain: automation
+
+  input:
+
+    # ==============================================================
+    # POWER / BATTERY
+    # ==============================================================
+
+    solar_surplus_sensor:
+      name: Solar surplus sensor
+      description: >
+        Sensor representing PV production minus total house consumption.
+        Positive = solar surplus.
+        Negative = power deficit.
+      selector:
+        entity:
+          domain: sensor
+
+    battery_soc_sensor:
+      name: Battery SOC sensor
+      description: >
+        Battery state of charge.
+      selector:
+        entity:
+          domain: sensor
+
+    # ==============================================================
+    # LOADS
+    # ==============================================================
+
+    loads:
+      name: Dump loads
+      description: >
+        Add your load-shedding entities in priority order.
+
+        FIRST item = highest priority.
+        LAST item = lowest priority.
+
+        Loads start in this order and are shed in reverse order.
+
+        Each load contains:
+        - name
+        - switch entity
+        - nominal power
+        - minimum start SOC
+        - minimum surplus requirement
+        - stop SOC
+        - hard deficit threshold
+        - optional conditional SOC/deficit stop
+        - optional high-SOC startup override
+
+      selector:
+        object:
+          multiple: true
+          label_field: name
+
+          fields:
+
+            name:
+              label: Load name
+              required: true
+              selector:
+                text:
+
+            entity:
+              label: Switch entity
+              required: true
+              selector:
+                entity:
+                  domain: switch
+
+            power:
+              label: Nominal power
+              required: true
+              selector:
+                number:
+                  min: 0
+                  max: 20000
+                  step: 50
+                  unit_of_measurement: W
+                  mode: box
+
+            start_soc:
+              label: Minimum start SOC
+              required: true
+              selector:
+                number:
+                  min: 0
+                  max: 100
+                  step: 1
+                  unit_of_measurement: "%"
+                  mode: slider
+
+            start_surplus:
+              label: Minimum surplus requirement
+              required: true
+              selector:
+                number:
+                  min: 0
+                  max: 20000
+                  step: 100
+                  unit_of_measurement: W
+                  mode: box
+
+            stop_soc:
+              label: Stop SOC
+              required: true
+              selector:
+                number:
+                  min: 0
+                  max: 100
+                  step: 1
+                  unit_of_measurement: "%"
+                  mode: slider
+
+            stop_deficit:
+              label: Stop deficit
+              required: true
+              selector:
+                number:
+                  min: -20000
+                  max: 0
+                  step: 100
+                  unit_of_measurement: W
+                  mode: box
+
+            conditional_stop_enabled:
+              label: Enable conditional SOC/deficit stop
+              required: true
+              selector:
+                boolean:
+
+            conditional_stop_soc:
+              label: Conditional stop SOC
+              required: true
+              selector:
+                number:
+                  min: 0
+                  max: 100
+                  step: 1
+                  unit_of_measurement: "%"
+                  mode: slider
+
+            high_soc_override_enabled:
+              label: Enable high-SOC startup override
+              required: true
+              selector:
+                boolean:
+
+            high_soc:
+              label: High-SOC threshold
+              required: true
+              selector:
+                number:
+                  min: 0
+                  max: 100
+                  step: 1
+                  unit_of_measurement: "%"
+                  mode: slider
+
+    # ==============================================================
+    # POWER MARGIN
+    # ==============================================================
+
+    safety_margin:
+      name: Solar surplus safety margin
+      description: >
+        Additional surplus required above the calculated consumption of
+        the currently running loads plus the load being started.
+      default: 300
+      selector:
+        number:
+          min: 0
+          max: 5000
+          step: 50
+          unit_of_measurement: W
+          mode: box
+
+    # ==============================================================
+    # TIMING
+    # ==============================================================
+
+    evaluation_interval:
+      name: Normal evaluation interval
+      description: >
+        Normal controller evaluation interval.
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
+          unit_of_measurement: min
+          mode: slider
+
+    startup_delay:
+      name: Startup delay
+      description: >
+        Minimum time between sequential load starts.
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 1
+          unit_of_measurement: min
+          mode: slider
+
+    shutdown_delay:
+      name: Shutdown settling delay
+      description: >
+        Time to wait after shutting down a load before evaluating
+        the next load.
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 60
+          step: 5
+          unit_of_measurement: sec
+          mode: slider
+
+    # ==============================================================
+    # DAYLIGHT
+    # ==============================================================
+
+    daylight_only:
+      name: Only start loads during daylight
+      description: >
+        Prevent normal startup when the sun is below the horizon.
+        Shutdown is still allowed at any time.
+      default: true
+      selector:
+        boolean:
+
+    # ==============================================================
+    # EMERGENCY
+    # ==============================================================
+
+    emergency_enabled:
+      name: Enable emergency load shedding
+      default: true
+      selector:
+        boolean:
+
+    emergency_deficit:
+      name: Emergency deficit
+      description: >
+        Sustained net-power deficit at which emergency shedding starts.
+      default: -4000
+      selector:
+        number:
+          min: -20000
+          max: -500
+          step: 100
+          unit_of_measurement: W
+          mode: box
+
+    emergency_duration:
+      name: Emergency deficit duration
+      description: >
+        The deficit must remain below the emergency threshold for this
+        amount of time before emergency shedding starts.
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 30
+          step: 1
+          unit_of_measurement: min
+          mode: slider
+
+    emergency_delay:
+      name: Emergency settling delay
+      description: >
+        Time to wait after each emergency shutdown before checking
+        net power again.
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 60
+          step: 5
+          unit_of_measurement: sec
+          mode: slider
+
+
+# ==================================================================
+# MODE
+# ==================================================================
+
+mode: single
+
+
+# ==================================================================
+# TRIGGERS
+# ==================================================================
+
+triggers:
+
+  - trigger: time_pattern
+    minutes: "*"
+    id: normal
+
+  - trigger: numeric_state
+    entity_id: !input solar_surplus_sensor
+    below: !input emergency_deficit
+    for:
+      minutes: !input emergency_duration
+    id: emergency
+
+
+# ==================================================================
+# ACTIONS
+# ==================================================================
+
+actions:
+
+  - variables:
+      load_list: !input loads
+      surplus_entity: !input solar_surplus_sensor
+      soc_entity: !input battery_soc_sensor
+      interval: !input evaluation_interval
+      margin: !input safety_margin
+      daylight: !input daylight_only
+      emergency_enabled: !input emergency_enabled
+      startup_delay_minutes: !input startup_delay
+
+
+  # ================================================================
+  # EMERGENCY CONTROLLER
+  # ================================================================
+
+  - choose:
+
+      - conditions:
+
+          - condition: trigger
+            id: emergency
+
+          - condition: template
+            value_template: "{{ emergency_enabled }}"
+
+        sequence:
+
+          - repeat:
+
+              while:
+
+                - condition: numeric_state
+                  entity_id: !input solar_surplus_sensor
+                  below: !input emergency_deficit
+
+                - condition: template
+                  value_template: >
+                    {% set ns = namespace(running=false) %}
+                    {% for load in load_list %}
+                      {% if states(load.entity) == 'on' %}
+                        {% set ns.running = true %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.running }}
+
+              sequence:
+
+                - variables:
+                    emergency_entity: >
+                      {% set ns = namespace(entity='') %}
+                      {% for load in load_list | reverse %}
+                        {% if states(load.entity) == 'on'
+                              and ns.entity == '' %}
+                          {% set ns.entity = load.entity %}
+                        {% endif %}
+                      {% endfor %}
+                      {{ ns.entity }}
+
+                - if:
+
+                    - condition: template
+                      value_template: >
+                        {{ emergency_entity != '' }}
+
+                  then:
+
+                    - action: switch.turn_off
+                      target:
+                        entity_id: "{{ emergency_entity }}"
+
+                    - delay:
+                        seconds: !input emergency_delay
+
+
+  # ================================================================
+  # NORMAL CONTROLLER
+  # ================================================================
+
+      - conditions:
+
+          - condition: trigger
+            id: normal
+
+          - condition: template
+            value_template: >
+              {{ now().minute % (interval | int) == 0 }}
+
+        sequence:
+
+          # ========================================================
+          # PHASE 1
+          # SHED LOADS
+          # ========================================================
+
+          - repeat:
+
+              for_each: "{{ load_list | reverse | list }}"
+
+              sequence:
+
+                - variables:
+                    load: "{{ repeat.item }}"
+                    load_entity: "{{ repeat.item.entity }}"
+                    current_soc: >
+                      {{ states(soc_entity) | float(0) }}
+                    current_surplus: >
+                      {{ states(surplus_entity) | float(0) }}
+
+                - if:
+
+                    - condition: template
+                      value_template: >
+                        {{ states(load_entity) == 'on' }}
+
+                    - condition: template
+                      value_template: >
+                        {{
+                          current_soc < (load.stop_soc | float)
+                          or
+                          (
+                            (load.conditional_stop_enabled | bool(false))
+                            and
+                            current_soc < (load.conditional_stop_soc | float)
+                            and
+                            current_surplus < 0
+                          )
+                          or
+                          current_surplus < (load.stop_deficit | float)
+                        }}
+
+                  then:
+
+                    - action: switch.turn_off
+                      target:
+                        entity_id: "{{ load_entity }}"
+
+                    - delay:
+                        seconds: !input shutdown_delay
+
+
+          # ========================================================
+          # PHASE 2
+          # START LOADS
+          # ========================================================
+
+          - repeat:
+
+              for_each: "{{ load_list | list }}"
+
+              sequence:
+
+                - variables:
+
+                    load: "{{ repeat.item }}"
+                    load_entity: "{{ repeat.item.entity }}"
+
+                    current_soc: >
+                      {{ states(soc_entity) | float(0) }}
+
+                    current_surplus: >
+                      {{ states(surplus_entity) | float(0) }}
+
+                    # ------------------------------------------------
+                    # Total configured wattage of currently running
+                    # dump loads.
+                    # ------------------------------------------------
+
+                    running_dump_power: >
+                      {% set ns = namespace(power=0) %}
+
+                      {% for candidate in load_list %}
+                        {% if states(candidate.entity) == 'on' %}
+                          {% set ns.power =
+                            ns.power + (candidate.power | float(0)) %}
+                        {% endif %}
+                      {% endfor %}
+
+                      {{ ns.power }}
+
+                    # ------------------------------------------------
+                    # Required startup surplus.
+                    # ------------------------------------------------
+
+                    calculated_start_surplus: >
+                      {{
+                        [
+                          load.start_surplus | float(0),
+                          running_dump_power
+                          + (load.power | float(0))
+                          + (margin | float(0))
+                        ] | max
+                      }}
+
+                    # ------------------------------------------------
+                    # Higher-priority loads must already be ON and
+                    # must have completed their startup delay.
+                    # ------------------------------------------------
+
+                    preceding_loads_ready: >
+                      {% set ns = namespace(ready=true) %}
+
+                      {% for prior in load_list[:repeat.index0] %}
+
+                        {% if states(prior.entity) != 'on' %}
+                          {% set ns.ready = false %}
+
+                        {% else %}
+
+                          {% set age =
+                            as_timestamp(now())
+                            -
+                            as_timestamp(states[prior.entity].last_changed)
+                          %}
+
+                          {% if age < (startup_delay_minutes | float * 60) %}
+                            {% set ns.ready = false %}
+                          {% endif %}
+
+                        {% endif %}
+
+                      {% endfor %}
+
+                      {{ ns.ready }}
+
+
+                # ==================================================
+                # START DECISION
+                # ==================================================
+
+                - if:
+
+                    # Load must be OFF
+                    - condition: template
+                      value_template: >
+                        {{ states(load_entity) == 'off' }}
+
+                    # Daylight restriction
+                    - condition: template
+                      value_template: >
+                        {{
+                          not daylight
+                          or
+                          states('sun.sun') == 'above_horizon'
+                        }}
+
+                    # Positive surplus required
+                    - condition: template
+                      value_template: >
+                        {{ current_surplus > 0 }}
+
+                    # Higher-priority loads must be ready
+                    - condition: template
+                      value_template: >
+                        {{ preceding_loads_ready }}
+
+                    # SOC + power requirements
+                    - condition: template
+                      value_template: >
+                        {{
+                          (
+                            current_soc > (load.start_soc | float)
+                            and
+                            current_surplus >= calculated_start_surplus
+                          )
+                          or
+                          (
+                            (load.high_soc_override_enabled | bool(false))
+                            and
+                            current_soc > (load.high_soc | float)
+                            and
+                            current_surplus >= calculated_start_surplus
+                          )
+                        }}
+
+                  then:
+
+                    - action: switch.turn_on
+                      target:
+                        entity_id: "{{ load_entity }}"
+
+                    - delay:
+                        minutes: !input startup_delay
